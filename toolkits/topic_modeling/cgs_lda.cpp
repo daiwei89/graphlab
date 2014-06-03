@@ -1317,8 +1317,6 @@ int main(int argc, char** argv) {
   // DW:
   ASSERT_EQ(0, fclose(output_llh_file_stream));
 
-
-
   if(!word_dir.empty()) {
     // save word topic counts
     const bool gzip_output = false;
