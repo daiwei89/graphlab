@@ -37,6 +37,7 @@
 #include "eigen_serialization.hpp"
 #include <graphlab/macros_def.hpp>
 
+FILE* output_file_stream;
 
 typedef Eigen::VectorXd vec_type;
 typedef Eigen::MatrixXd mat_type;
@@ -374,9 +375,12 @@ struct error_aggregator : public graphlab::IS_POD_TYPE {
 		iter++;
 		if (iter%2 == 0)
 			return; 
-		const double train_error = std::sqrt(agg.train_error / info.training_edges);
+		//const double train_error = std::sqrt(agg.train_error / info.training_edges);
+		const double train_error = std::sqrt(agg.train_error);
+    //std::cout << "info.training_edges = " << info.training_edges;
 		assert(!std::isnan(train_error));
-		context.cout() << std::setw(8) << context.elapsed_seconds()  << "  " << std::setw(8) << train_error;
+    double time_so_far = context.elapsed_seconds();
+		context.cout() << std::setw(8) << time_so_far << "  " << std::setw(8) << train_error;
 		if(info.validation_edges > 0) {
 			const double validation_error = 
 				std::sqrt(agg.validation_error / info.validation_edges);
@@ -384,6 +388,11 @@ struct error_aggregator : public graphlab::IS_POD_TYPE {
 		}
 		context.cout() << std::endl;
 		sgd_vertex_program::GAMMA *= sgd_vertex_program::STEP_DEC;
+    if (iter == 0) {
+      fprintf(output_file_stream, "Iter Time(sec) L2_sqrt_error L2_error\n");
+    }
+    fprintf(output_file_stream, "%d %f %f %f\n", iter,
+        time_so_far, train_error, train_error * train_error);
 	}
 }; // end of error aggregator
 
@@ -393,10 +402,14 @@ struct error_aggregator : public graphlab::IS_POD_TYPE {
 double extract_l2_error(const graph_type::edge_type & edge) {
 	double pred = 
 		edge.source().data().pvec.dot(edge.target().data().pvec);
-	pred = std::min(sgd_vertex_program::MAXVAL, pred);
-	pred = std::max(sgd_vertex_program::MINVAL, pred);
+	//pred = std::min(sgd_vertex_program::MAXVAL, pred);
+	//pred = std::max(sgd_vertex_program::MINVAL, pred);
 	double rmse = (edge.data().obs - pred) * (edge.data().obs - pred);
-	assert(rmse <= pow(sgd_vertex_program::MAXVAL-sgd_vertex_program::MINVAL,2));
+	//assert(rmse <= pow(sgd_vertex_program::MAXVAL-sgd_vertex_program::MINVAL,2));
+  // DW: Add L2-regularized terms.
+  //double L2_error = edge.source().data().pvec.dot(edge.source().data().pvec);
+  //L2_error += edge.target().data().pvec.dot(edge.target().data().pvec);
+	//return rmse + sgd_vertex_program::LAMBDA * L2_error;
 	return rmse;
 } // end of extract_l2_error
 
@@ -569,6 +582,10 @@ int main(int argc, char** argv) {
 			"The time in seconds between error reports");
 	clopts.attach_option("predictions", predictions,
 			"The prefix (folder and filename) to save predictions.");
+  // DW
+  std::string output_file;
+  clopts.attach_option("output_file", output_file,
+      "The output llh file.");
 
 	parse_implicit_command_line(clopts);
 
@@ -577,6 +594,11 @@ int main(int argc, char** argv) {
 		clopts.print_description();
 		return EXIT_FAILURE;
 	}
+  // DW
+  output_file_stream = fopen(output_file.c_str(), "w");
+  std::cout << "output_file = " << output_file << std::endl;
+  ASSERT_NE(NULL, output_file_stream);
+
 	debug = sgd_vertex_program::debug;
 	//  omp_set_num_threads(clopts.get_ncpus());
 	///! Initialize control plain using mpi
@@ -682,6 +704,8 @@ int main(int argc, char** argv) {
 	}
 
 
+  // DW:
+  ASSERT_EQ(0, fclose(output_file_stream));
 
 	graphlab::mpi_tools::finalize();
 	return EXIT_SUCCESS;

@@ -47,7 +47,57 @@
 #include <boost/spirit/include/phoenix_stl.hpp>
 #include <graphlab/parallel/atomic.hpp>
 
+#include <cstdio>
 
+// This is a simpler implementation of timer to replace
+// boost::high_resolution_timer. Code based on
+// http://boost.2283326.n4.nabble.com/boost-shared-mutex-performance-td2659061.html
+class HighResolutionTimer {
+public:
+  HighResolutionTimer() {
+    restart();
+  }
+
+  void restart() {
+    int status = clock_gettime(CLOCK_MONOTONIC, &start_time_);
+    //CHECK_NE(-1, status) << "Couldn't initialize start_time_";
+  }
+
+  // return elapsed time in seconds
+  double elapsed() const {
+    struct timespec now;
+    int status = clock_gettime(CLOCK_MONOTONIC, &now);
+    //CHECK_NE(-1, status) << "Couldn't get current time.";
+
+    double ret_sec = double(now.tv_sec - start_time_.tv_sec);
+    double ret_nsec = double(now.tv_nsec - start_time_.tv_nsec);
+
+    while (ret_nsec < 0) {
+      ret_sec -= 1.0;
+      ret_nsec += 1e9;
+    }
+    double ret = ret_sec + ret_nsec / 1e9;
+    return ret;
+  }
+
+  // return estimated maximum value for elapsed()
+  double elapsed_max() const {
+    return double((std::numeric_limits<double>::max)());
+  }
+
+  // return minimum value for elapsed()
+  double elapsed_min() const {
+    return 0.0;
+  }
+
+private:
+  struct timespec start_time_;
+};
+
+
+// track the computation time only.
+HighResolutionTimer global_timer;
+FILE* output_llh_file_stream;
 
 // Global Types
 // ============================================================================
@@ -72,7 +122,7 @@ typedef std::vector< graphlab::atomic<count_type> > factor_type;
  * operator+=
  */
 inline factor_type& operator+=(factor_type& lvalue,
-                               const factor_type& rvalue) {
+    const factor_type& rvalue) {
   if(!rvalue.empty()) {
     if(lvalue.empty()) lvalue = rvalue;
     else {
@@ -323,39 +373,39 @@ bool vparser(vertex_data& vd, const std::string& line){
  * We use the relativley fast boost::spirit parser to parse each line.
  */
 bool graph_loader(graph_type& graph, const std::string& fname,
-                  const std::string& line) {
+    const std::string& line) {
   ASSERT_FALSE(line.empty());
   namespace qi = boost::spirit::qi;
-  namespace ascii = boost::spirit::ascii;
-  namespace phoenix = boost::phoenix;
+namespace ascii = boost::spirit::ascii;
+namespace phoenix = boost::phoenix;
 
-  graphlab::vertex_id_type doc_id(-1), word_id(-1);
-  size_t count = 0;
-  const bool success = qi::phrase_parse
-    (line.begin(), line.end(),       
-     //  Begin grammar
-     (
-      qi::ulong_[phoenix::ref(doc_id) = qi::_1] >> -qi::char_(',') >>
-      qi::ulong_[phoenix::ref(word_id) = qi::_1] >> -qi::char_(',') >>
-      qi::ulong_[phoenix::ref(count) = qi::_1]
-      )
-     ,
-     //  End grammar
-     ascii::space); 
-  if(!success) return false;  
-  // Threshold the count
-  count = std::min(count, MAX_COUNT);
-  // since this is a bipartite graph I need a method to number the
-  // left and right vertices differently.  To accomplish I make sure
-  // all vertices have non-zero ids and then negate the right vertex.
-  // Unfortunatley graphlab reserves -1 and so we add 2 and negate.
-  doc_id += 2;
-  ASSERT_GT(doc_id, 1);
-  doc_id = -doc_id;
-  ASSERT_NE(doc_id, word_id);
-  // Create an edge and add it to the graph
-  graph.add_edge(doc_id, word_id, edge_data(count));
-  return true; // successful load
+graphlab::vertex_id_type doc_id(-1), word_id(-1);
+size_t count = 0;
+const bool success = qi::phrase_parse
+  (line.begin(), line.end(),       
+   //  Begin grammar
+   (
+    qi::ulong_[phoenix::ref(doc_id) = qi::_1] >> -qi::char_(',') >>
+    qi::ulong_[phoenix::ref(word_id) = qi::_1] >> -qi::char_(',') >>
+    qi::ulong_[phoenix::ref(count) = qi::_1]
+   )
+   ,
+   //  End grammar
+   ascii::space); 
+if(!success) return false;  
+// Threshold the count
+count = std::min(count, MAX_COUNT);
+// since this is a bipartite graph I need a method to number the
+// left and right vertices differently.  To accomplish I make sure
+// all vertices have non-zero ids and then negate the right vertex.
+// Unfortunatley graphlab reserves -1 and so we add 2 and negate.
+doc_id += 2;
+ASSERT_GT(doc_id, 1);
+doc_id = -doc_id;
+ASSERT_NE(doc_id, word_id);
+// Create an edge and add it to the graph
+graph.add_edge(doc_id, word_id, edge_data(count));
+return true; // successful load
 }; // end of graph loader
 
 
@@ -397,7 +447,7 @@ inline size_t count_tokens(const graph_type::edge_type& edge) {
  */
 inline graph_type::vertex_type
 get_other_vertex(const graph_type::edge_type& edge,
-                 const graph_type::vertex_type& vertex) {
+    const graph_type::vertex_type& vertex) {
   return vertex.id() == edge.source().id()? edge.target() : edge.source();
 }
 
@@ -444,122 +494,122 @@ struct gather_type {
 class cgs_lda_vertex_program :
   public graphlab::ivertex_program<graph_type, gather_type>,
   public graphlab::IS_POD_TYPE {
-public:
+  public:
 
-  /**
-   * \brief At termination we want to disable sampling to allow the
-   * correct final counts to be computed.
-   */
-  static bool DISABLE_SAMPLING; 
+    /**
+     * \brief At termination we want to disable sampling to allow the
+     * correct final counts to be computed.
+     */
+    static bool DISABLE_SAMPLING; 
 
-  /** \brief gather on all edges */
-  edge_dir_type gather_edges(icontext_type& context,
-                             const vertex_type& vertex) const {
-    return graphlab::ALL_EDGES;
-  } // end of gather_edges
+    /** \brief gather on all edges */
+    edge_dir_type gather_edges(icontext_type& context,
+        const vertex_type& vertex) const {
+      return graphlab::ALL_EDGES;
+    } // end of gather_edges
 
-  /**
-   * \brief Collect the current topic count on each edge.
-   */
-  gather_type gather(icontext_type& context, const vertex_type& vertex,
-                     edge_type& edge) const {
-    gather_type ret(edge.data().nchanges);
-    const assignment_type& assignment = edge.data().assignment;
-    foreach(topic_id_type asg, assignment) {
-      if(asg != NULL_TOPIC) ++ret.factor[asg];
-    }
-    return ret;
-  } // end of gather
-
-
-  /**
-   * \brief Update the topic count for the center vertex.  This
-   * ensures that the center vertex has the correct topic count before
-   * resampling the topics for each token along each edge.
-   */
-  void apply(icontext_type& context, vertex_type& vertex,
-             const gather_type& sum) {
-    const size_t num_neighbors = vertex.num_in_edges() + vertex.num_out_edges();
-    ASSERT_GT(num_neighbors, 0);
-    // There should be no new edge data since the vertex program has been cleared
-    vertex_data& vdata = vertex.data();
-    ASSERT_EQ(sum.factor.size(), NTOPICS);
-    ASSERT_EQ(vdata.factor.size(), NTOPICS);
-    vdata.nupdates++;
-    vdata.nchanges = sum.nchanges;
-    vdata.factor = sum.factor;
-  } // end of apply
-
-
-  /**
-   * \brief Scatter on all edges if the computation is on-going.
-   * Computation stops after bunrin or when disable sampling is set to
-   * true.
-   */
-  edge_dir_type scatter_edges(icontext_type& context,
-                              const vertex_type& vertex) const {
-    return (DISABLE_SAMPLING || (BURNIN > 0 && context.elapsed_seconds() > BURNIN))? 
-      graphlab::NO_EDGES : graphlab::ALL_EDGES;
-  }; // end of scatter edges
-
-
-  /**
-   * \brief Draw new topic assignments for each edge token.
-   *
-   * Note that we exploit the GraphLab caching model here by DIRECTLY
-   * modifying the topic counts of adjacent vertices.  Making the
-   * changes immediately visible to any adjacent vertex programs
-   * running on the same machine.  However, these changes will be
-   * overwritten during the apply step and are only used to accelerate
-   * sampling.  This is a potentially dangerous violation of the
-   * abstraction and should be taken with caution.  In our case all
-   * vertex topic counts are preallocated and atomic operations are
-   * used.  In addition during the sampling phase we must be careful
-   * to guard against potentially negative temporary counts.
-   */
-  void scatter(icontext_type& context, const vertex_type& vertex,
-               edge_type& edge) const {
-    factor_type& doc_topic_count =  is_doc(edge.source()) ?
-      edge.source().data().factor : edge.target().data().factor;
-    factor_type& word_topic_count = is_word(edge.source()) ?
-      edge.source().data().factor : edge.target().data().factor;
-    ASSERT_EQ(doc_topic_count.size(), NTOPICS);
-    ASSERT_EQ(word_topic_count.size(), NTOPICS);
-    // run the actual gibbs sampling
-    std::vector<double> prob(NTOPICS);
-    assignment_type& assignment = edge.data().assignment;
-    edge.data().nchanges = 0;
-    foreach(topic_id_type& asg, assignment) {
-      const topic_id_type old_asg = asg;
-      if(asg != NULL_TOPIC) { // construct the cavity
-        --doc_topic_count[asg];
-        --word_topic_count[asg];
-        --GLOBAL_TOPIC_COUNT[asg];
+    /**
+     * \brief Collect the current topic count on each edge.
+     */
+    gather_type gather(icontext_type& context, const vertex_type& vertex,
+        edge_type& edge) const {
+      gather_type ret(edge.data().nchanges);
+      const assignment_type& assignment = edge.data().assignment;
+      foreach(topic_id_type asg, assignment) {
+        if(asg != NULL_TOPIC) ++ret.factor[asg];
       }
-      for(size_t t = 0; t < NTOPICS; ++t) {
-        const double n_dt =
-          std::max(count_type(doc_topic_count[t]), count_type(0));
-        const double n_wt =
-          std::max(count_type(word_topic_count[t]), count_type(0));
-        const double n_t  =
-          std::max(count_type(GLOBAL_TOPIC_COUNT[t]), count_type(0));
-        prob[t] = (ALPHA + n_dt) * (BETA + n_wt) / (BETA * NWORDS + n_t);
-      }
-      asg = graphlab::random::multinomial(prob);
-      // asg = std::max_element(prob.begin(), prob.end()) - prob.begin();
-      ++doc_topic_count[asg];
-      ++word_topic_count[asg];
-      ++GLOBAL_TOPIC_COUNT[asg];
-      if(asg != old_asg) {
-        ++edge.data().nchanges;
-        INCREMENT_EVENT(TOKEN_CHANGES,1);
-      }
-    } // End of loop over each token
-    // singla the other vertex
-    context.signal(get_other_vertex(edge, vertex));
-  } // end of scatter function
+      return ret;
+    } // end of gather
 
-}; // end of cgs_lda_vertex_program
+
+    /**
+     * \brief Update the topic count for the center vertex.  This
+     * ensures that the center vertex has the correct topic count before
+     * resampling the topics for each token along each edge.
+     */
+    void apply(icontext_type& context, vertex_type& vertex,
+        const gather_type& sum) {
+      const size_t num_neighbors = vertex.num_in_edges() + vertex.num_out_edges();
+      ASSERT_GT(num_neighbors, 0);
+      // There should be no new edge data since the vertex program has been cleared
+      vertex_data& vdata = vertex.data();
+      ASSERT_EQ(sum.factor.size(), NTOPICS);
+      ASSERT_EQ(vdata.factor.size(), NTOPICS);
+      vdata.nupdates++;
+      vdata.nchanges = sum.nchanges;
+      vdata.factor = sum.factor;
+    } // end of apply
+
+
+    /**
+     * \brief Scatter on all edges if the computation is on-going.
+     * Computation stops after bunrin or when disable sampling is set to
+     * true.
+     */
+    edge_dir_type scatter_edges(icontext_type& context,
+        const vertex_type& vertex) const {
+      return (DISABLE_SAMPLING || (BURNIN > 0 && context.elapsed_seconds() > BURNIN))? 
+        graphlab::NO_EDGES : graphlab::ALL_EDGES;
+    }; // end of scatter edges
+
+
+    /**
+     * \brief Draw new topic assignments for each edge token.
+     *
+     * Note that we exploit the GraphLab caching model here by DIRECTLY
+     * modifying the topic counts of adjacent vertices.  Making the
+     * changes immediately visible to any adjacent vertex programs
+     * running on the same machine.  However, these changes will be
+     * overwritten during the apply step and are only used to accelerate
+     * sampling.  This is a potentially dangerous violation of the
+     * abstraction and should be taken with caution.  In our case all
+     * vertex topic counts are preallocated and atomic operations are
+     * used.  In addition during the sampling phase we must be careful
+     * to guard against potentially negative temporary counts.
+     */
+    void scatter(icontext_type& context, const vertex_type& vertex,
+        edge_type& edge) const {
+      factor_type& doc_topic_count =  is_doc(edge.source()) ?
+        edge.source().data().factor : edge.target().data().factor;
+      factor_type& word_topic_count = is_word(edge.source()) ?
+        edge.source().data().factor : edge.target().data().factor;
+      ASSERT_EQ(doc_topic_count.size(), NTOPICS);
+      ASSERT_EQ(word_topic_count.size(), NTOPICS);
+      // run the actual gibbs sampling
+      std::vector<double> prob(NTOPICS);
+      assignment_type& assignment = edge.data().assignment;
+      edge.data().nchanges = 0;
+      foreach(topic_id_type& asg, assignment) {
+        const topic_id_type old_asg = asg;
+        if(asg != NULL_TOPIC) { // construct the cavity
+          --doc_topic_count[asg];
+          --word_topic_count[asg];
+          --GLOBAL_TOPIC_COUNT[asg];
+        }
+        for(size_t t = 0; t < NTOPICS; ++t) {
+          const double n_dt =
+            std::max(count_type(doc_topic_count[t]), count_type(0));
+          const double n_wt =
+            std::max(count_type(word_topic_count[t]), count_type(0));
+          const double n_t  =
+            std::max(count_type(GLOBAL_TOPIC_COUNT[t]), count_type(0));
+          prob[t] = (ALPHA + n_dt) * (BETA + n_wt) / (BETA * NWORDS + n_t);
+        }
+        asg = graphlab::random::multinomial(prob);
+        // asg = std::max_element(prob.begin(), prob.end()) - prob.begin();
+        ++doc_topic_count[asg];
+        ++word_topic_count[asg];
+        ++GLOBAL_TOPIC_COUNT[asg];
+        if(asg != old_asg) {
+          ++edge.data().nchanges;
+          INCREMENT_EVENT(TOKEN_CHANGES,1);
+        }
+      } // End of loop over each token
+      // singla the other vertex
+      context.signal(get_other_vertex(edge, vertex));
+    } // end of scatter function
+
+  }; // end of cgs_lda_vertex_program
 
 
 bool cgs_lda_vertex_program::DISABLE_SAMPLING = false;
@@ -605,7 +655,7 @@ public:
     for(size_t i = 0; i < top_words.size(); ++i) {
       // Merge the topk
       top_words[i].insert(other.top_words[i].begin(),
-                          other.top_words[i].end());
+          other.top_words[i].end());
       // Remove excess elements
       while(top_words[i].size() > TOPK)
         top_words[i].erase(top_words[i].begin());
@@ -614,7 +664,7 @@ public:
   } // end of operator +=
 
   static topk_aggregator map(icontext_type& context,
-                             const graph_type::vertex_type& vertex) {
+      const graph_type::vertex_type& vertex) {
     topk_aggregator ret_value;
     const vertex_data& vdata = vertex.data();
     ret_value.nchanges = vdata.nchanges;
@@ -632,7 +682,7 @@ public:
 
 
   static void finalize(icontext_type& context,
-                       const topk_aggregator& total) {
+      const topk_aggregator& total) {
     if(context.procid() != 0) return;
     std::string json = "{\n"+ TOP_WORDS.json_header_string() +
       "\t\"values\": [\n";
@@ -641,13 +691,13 @@ public:
       json += "\t[\n";
       size_t counter = 0;
       rev_foreach(cw_pair_type pair, total.top_words[i])  {
-      ASSERT_LT(pair.second, DICTIONARY.size());
+        ASSERT_LT(pair.second, DICTIONARY.size());
         json += "\t\t[\"" + DICTIONARY[pair.second] + "\", " +
           graphlab::tostr(pair.first) + "]";
         if(++counter < total.top_words[i].size()) json += ", ";
         json += '\n';
         std::cout << DICTIONARY[pair.second]
-                  << "(" << pair.first << ")" << ", ";
+          << "(" << pair.first << ")" << ", ";
         // std::cout << DICTIONARY[pair.second] << ",  ";
       }
       json += "\t]";
@@ -738,18 +788,18 @@ log_gamma BETA_LGAMMA;
  *
  * Latex formulation:
  *
-    \mathcal{L}( w | z) & = T * \left( \log\Gamma(W * \beta) - W * \log\Gamma(\beta) \right) + \\
-    & \sum_{t} \left( \left(\sum_{w} \log\Gamma(N_{wt} + \beta)\right) - 
-           \log\Gamma\left( W * \beta + \sum_{w} N_{wt}  \right) \right) \\
-    & = T * \left( \log\Gamma(W * \beta) - W * \log\Gamma(\beta) \right) - 
-        \sum_{t} \log\Gamma\left( W * \beta + N_{t}  \right) + \\
-    & \sum_{w} \sum_{t} \log\Gamma(N_{wt} + \beta)   \\
-    \\
-    \mathcal{L}(z) & = D * \left(\log\Gamma(T * \alpha) - T * \log\Gamma(\alpha) \right) + \\
-    & \sum_{d} \left( \left(\sum_{t}\log\Gamma(N_{td} + \alpha)\right) -  
-        \log\Gamma\left( T * \alpha + \sum_{t} N_{td} \right) \right) \\
-    \\
-    \mathcal{L}(w,z) & = \mathcal{L}(w | z) + \mathcal{L}(z)
+ \mathcal{L}( w | z) & = T * \left( \log\Gamma(W * \beta) - W * \log\Gamma(\beta) \right) + \\
+ & \sum_{t} \left( \left(\sum_{w} \log\Gamma(N_{wt} + \beta)\right) - 
+ \log\Gamma\left( W * \beta + \sum_{w} N_{wt}  \right) \right) \\
+ & = T * \left( \log\Gamma(W * \beta) - W * \log\Gamma(\beta) \right) - 
+ \sum_{t} \log\Gamma\left( W * \beta + N_{t}  \right) + \\
+ & \sum_{w} \sum_{t} \log\Gamma(N_{wt} + \beta)   \\
+ \\
+ \mathcal{L}(z) & = D * \left(\log\Gamma(T * \alpha) - T * \log\Gamma(\alpha) \right) + \\
+ & \sum_{d} \left( \left(\sum_{t}\log\Gamma(N_{td} + \alpha)\right) -  
+ \log\Gamma\left( T * \alpha + \sum_{t} N_{td} \right) \right) \\
+ \\
+ \mathcal{L}(w,z) & = \mathcal{L}(w | z) + \mathcal{L}(z)
  *
  */
 class likelihood_aggregator : public graphlab::IS_POD_TYPE {
@@ -766,29 +816,29 @@ public:
   } // end of operator +=
 
   static likelihood_aggregator
-  map(icontext_type& context, const vertex_type& vertex) {
-    // using boost::math::lgamma;
-    const factor_type& factor = vertex.data().factor;
-    ASSERT_EQ(factor.size(), NTOPICS);
-    likelihood_aggregator ret;
-    if(is_word(vertex)) {
-      for(size_t t = 0; t < NTOPICS; ++t) {
-        const count_type value = std::max(count_type(factor[t]), count_type(0));
-        //ret.lik_words_given_topics += lgamma(value + BETA);
-        ret.lik_words_given_topics += BETA_LGAMMA(value);
+    map(icontext_type& context, const vertex_type& vertex) {
+      // using boost::math::lgamma;
+      const factor_type& factor = vertex.data().factor;
+      ASSERT_EQ(factor.size(), NTOPICS);
+      likelihood_aggregator ret;
+      if(is_word(vertex)) {
+        for(size_t t = 0; t < NTOPICS; ++t) {
+          const count_type value = std::max(count_type(factor[t]), count_type(0));
+          //ret.lik_words_given_topics += lgamma(value + BETA);
+          ret.lik_words_given_topics += BETA_LGAMMA(value);
+        }
+      } else {  ASSERT_TRUE(is_doc(vertex));
+        double ntokens_in_doc = 0;
+        for(size_t t = 0; t < NTOPICS; ++t) {
+          const count_type value = std::max(count_type(factor[t]), count_type(0));
+          //ret.lik_topics += lgamma(value + ALPHA);
+          ret.lik_topics += ALPHA_LGAMMA(value);
+          ntokens_in_doc += value;
+        }
+        ret.lik_topics -= lgamma(ntokens_in_doc + NTOPICS * ALPHA);
       }
-    } else {  ASSERT_TRUE(is_doc(vertex));
-      double ntokens_in_doc = 0;
-      for(size_t t = 0; t < NTOPICS; ++t) {
-        const count_type value = std::max(count_type(factor[t]), count_type(0));
-        //ret.lik_topics += lgamma(value + ALPHA);
-        ret.lik_topics += ALPHA_LGAMMA(value);
-        ntokens_in_doc += value;
-      }
-      ret.lik_topics -= lgamma(ntokens_in_doc + NTOPICS * ALPHA);
-    }
-    return ret;
-  } // end of map function
+      return ret;
+    } // end of map function
 
   static void finalize(icontext_type& context, const likelihood_aggregator& total) {
     using boost::math::lgamma;
@@ -809,7 +859,10 @@ public:
       total.lik_topics;
 
     const double lik = lik_words_given_topics + lik_topics;
-    context.cout() << "Likelihood: " << lik << std::endl;
+    float t = global_timer.elapsed();
+    context.cout() << "Likelihood: " << lik
+      << std::endl << "time = " << t << std::endl;
+    fprintf(output_llh_file_stream, "%f %f\n", t, lik);
   } // end of finalize
 }; // end of likelihood_aggregator struct
 
@@ -826,20 +879,20 @@ struct signal_only {
    * vertices.
    */ 
   static graphlab::empty
-  docs(icontext_type& context, const graph_type::vertex_type& vertex) {
-    if(is_doc(vertex)) context.signal(vertex);
-    return graphlab::empty();
-  } // end of signal_docs
- 
- /**
-  * \brief Signal only the word vertices and skip the document
-  * vertices.
-  */
+    docs(icontext_type& context, const graph_type::vertex_type& vertex) {
+      if(is_doc(vertex)) context.signal(vertex);
+      return graphlab::empty();
+    } // end of signal_docs
+
+  /**
+   * \brief Signal only the word vertices and skip the document
+   * vertices.
+   */
   static graphlab::empty
-  words(icontext_type& context, const graph_type::vertex_type& vertex) {
-    if(is_word(vertex)) context.signal(vertex);
-    return graphlab::empty();
-  } // end of signal_words
+    words(icontext_type& context, const graph_type::vertex_type& vertex) {
+      if(is_word(vertex)) context.signal(vertex);
+      return graphlab::empty();
+    } // end of signal_words
 }; // end of selective_only
 
 
@@ -856,14 +909,14 @@ struct signal_only {
  *
  \verbatim
  <docid> <wordid> <count>
-          ...
+ ...
  \endverbatim
  *
  * for example:
  \verbatim
-    0    0     2
-    0    4     1
-    0    2     3
+ 0    0     2
+ 0    4     1
+ 0    2     3
  \endverbatim
  * 
  * implies that document zero contains word zero twice, word 4 once,
@@ -890,54 +943,54 @@ struct signal_only {
  * preprocessed json format using the graph builder tools.
  */
 bool load_and_initialize_graph(graphlab::distributed_control& dc,
-                               graph_type& graph,
-                               const std::string& corpus_dir,
-                               const std::string& format			       
-			       ) {
+    graph_type& graph,
+    const std::string& corpus_dir,
+    const std::string& format			       
+    ) {
   dc.cout() << "Loading graph." << std::endl;
   graphlab::timer timer; timer.start();
 
   if(format=="matrix"){
-      dc.cout() << "matrix format" << std::endl;
-      graph.load(corpus_dir, graph_loader);
-  // } else if(format=="json"){
-  //     dc.cout() << "json format" << std::endl;
-  //     graph.load_json(corpus_dir, false, eparser, vparser);
-  // } else if(format=="json-gzip"){
-  //     dc.cout() <<"json gzip format" << std::endl;
-  //     graph.load_json(corpus_dir, true, eparser, vparser);
-  }else{
-      dc.cout() << "Non supported format. See --help" << std::endl;
-      return false;
-  }
+    dc.cout() << "matrix format" << std::endl;
+    graph.load(corpus_dir, graph_loader);
+    // } else if(format=="json"){
+    //     dc.cout() << "json format" << std::endl;
+    //     graph.load_json(corpus_dir, false, eparser, vparser);
+    // } else if(format=="json-gzip"){
+    //     dc.cout() <<"json gzip format" << std::endl;
+    //     graph.load_json(corpus_dir, true, eparser, vparser);
+}else{
+  dc.cout() << "Non supported format. See --help" << std::endl;
+  return false;
+}
 
-  dc.cout() << "Finalizing graph." << std::endl;
-  timer.start();
-  graph.finalize();
-  dc.cout() << "Finalizing graph. Finished in "
-            << timer.current_time() << " seconds." << std::endl;
+dc.cout() << "Finalizing graph." << std::endl;
+timer.start();
+graph.finalize();
+dc.cout() << "Finalizing graph. Finished in "
+<< timer.current_time() << " seconds." << std::endl;
 
-  dc.cout() << "Computing number of words and documents." << std::endl;
-  NWORDS = graph.map_reduce_vertices<size_t>(is_word);
-  NDOCS = graph.map_reduce_vertices<size_t>(is_doc);
-  NTOKENS = graph.map_reduce_edges<size_t>(count_tokens);
-
-
-  dc.cout() << "Number of words:     " << NWORDS  << std::endl;
-  dc.cout() << "Number of docs:      " << NDOCS   << std::endl;
-  dc.cout() << "Number of tokens:    " << NTOKENS << std::endl;
-
-  ASSERT_GT(NWORDS, 0);
-  ASSERT_GT(NDOCS, 0);
-  ASSERT_GT(NTOKENS, 0);
+dc.cout() << "Computing number of words and documents." << std::endl;
+NWORDS = graph.map_reduce_vertices<size_t>(is_word);
+NDOCS = graph.map_reduce_vertices<size_t>(is_doc);
+NTOKENS = graph.map_reduce_edges<size_t>(count_tokens);
 
 
-  // Prepare the json struct with the word counts
-  TOP_WORDS.lock.lock();
-  TOP_WORDS.json_string = "{\n" + TOP_WORDS.json_header_string() +
-    "\t\"values\": [] \n }";
-  TOP_WORDS.lock.unlock();
-  return true;
+dc.cout() << "Number of words:     " << NWORDS  << std::endl;
+dc.cout() << "Number of docs:      " << NDOCS   << std::endl;
+dc.cout() << "Number of tokens:    " << NTOKENS << std::endl;
+
+ASSERT_GT(NWORDS, 0);
+ASSERT_GT(NDOCS, 0);
+ASSERT_GT(NTOKENS, 0);
+
+
+// Prepare the json struct with the word counts
+TOP_WORDS.lock.lock();
+TOP_WORDS.json_string = "{\n" + TOP_WORDS.json_header_string() +
+"\t\"values\": [] \n }";
+TOP_WORDS.lock.unlock();
+return true;
 } // end of load and initialize graph
 
 
@@ -970,7 +1023,7 @@ bool load_dictionary(const std::string& fname)  {
     fin.push(in_file);
     if(!fin.good()) {
       logstream(LOG_ERROR) << "Error loading dictionary: "
-                           << fname << std::endl;
+        << fname << std::endl;
       return false;
     }
     std::string term;
@@ -981,13 +1034,13 @@ bool load_dictionary(const std::string& fname)  {
   } else {
     std::cout << "opening: " << fname << std::endl;
     std::ifstream in_file(fname.c_str(),
-                          std::ios_base::in | std::ios_base::binary);
+        std::ios_base::in | std::ios_base::binary);
     boost::iostreams::filtering_stream<boost::iostreams::input> fin;
     if (gzip) fin.push(boost::iostreams::gzip_decompressor());
     fin.push(in_file);
     if(!fin.good() || !fin.good()) {
       logstream(LOG_ERROR) << "Error loading dictionary: "
-                           << fname << std::endl;
+        << fname << std::endl;
       return false;
     }
     std::string term;
@@ -1015,7 +1068,7 @@ struct count_saver {
     // Skip saving vertex data if the vertex type is not consistent
     // with the save type
     if((save_words && is_doc(vertex)) ||
-       (!save_words && is_word(vertex))) return "";
+        (!save_words && is_word(vertex))) return "";
     // Proceed to save
     std::stringstream strm;
     if(save_words) {
@@ -1059,6 +1112,7 @@ typedef graphlab::omni_engine<cgs_lda_vertex_program> engine_type;
 
 
 int main(int argc, char** argv) {
+
   global_logger().set_log_level(LOG_INFO);
   global_logger().set_log_to_console(true);
   ///! Initialize control plain using mpi
@@ -1096,37 +1150,42 @@ int main(int argc, char** argv) {
   std::string word_dir;
   std::string exec_type = "asynchronous";
   std::string format = "matrix";
-  
+
+
   clopts.attach_option("dictionary", dictionary_fname,
-                       "The file containing the list of unique words");
+      "The file containing the list of unique words");
   clopts.attach_option("engine", exec_type, 
-                       "The engine type synchronous or asynchronous");
+      "The engine type synchronous or asynchronous");
   clopts.attach_option("corpus", corpus_dir,
-                       "The directory or file containing the corpus data.");
+      "The directory or file containing the corpus data.");
   clopts.add_positional("corpus");
   clopts.attach_option("ntopics", NTOPICS,
-                       "Number of topics to use.");
+      "Number of topics to use.");
   clopts.attach_option("alpha", ALPHA,
-                       "The document hyper-prior");
+      "The document hyper-prior");
   clopts.attach_option("beta", BETA,
-                       "The word hyper-prior");
+      "The word hyper-prior");
   clopts.attach_option("topk", TOPK,
-                       "The number of words to report");
+      "The number of words to report");
   clopts.attach_option("interval", INTERVAL,
-                       "statistics reporting interval (in seconds)");
+      "statistics reporting interval (in seconds)");
   clopts.attach_option("lik_interval", LIK_INTERVAL,
-                       "likelihood reporting interval (in seconds)");
+      "likelihood reporting interval (in seconds)");
   clopts.attach_option("max_count", MAX_COUNT,
-                       "The maximum number of occurences of a word in a document.");
+      "The maximum number of occurences of a word in a document.");
   clopts.attach_option("format", format,
-                       "Formats: matrix,json,json-gzip");
+      "Formats: matrix,json,json-gzip");
   clopts.attach_option("burnin", BURNIN, 
-                       "The time in second to run until a sample is collected. "
-                       "If less than zero the sampler runs indefinitely.");
+      "The time in second to run until a sample is collected. "
+      "If less than zero the sampler runs indefinitely.");
   clopts.attach_option("doc_dir", doc_dir,
-                       "The output directory to save the final document counts.");
+      "The output directory to save the final document counts.");
   clopts.attach_option("word_dir", word_dir,
-                       "The output directory to save the final words counts.");
+      "The output directory to save the final words counts.");
+  // DW
+  std::string output_llh_file;
+  clopts.attach_option("output_llh_file", output_llh_file,
+      "The output llh file.");
 
 
   if(!clopts.parse(argc, argv)) {
@@ -1136,7 +1195,7 @@ int main(int argc, char** argv) {
 
   if(dictionary_fname.empty()) {
     logstream(LOG_WARNING) << "No dictionary file was provided." << std::endl
-                           << "Top k words will not be estimated." << std::endl;
+      << "Top k words will not be estimated." << std::endl;
   }
 
   if(corpus_dir.empty()) {
@@ -1159,6 +1218,12 @@ int main(int argc, char** argv) {
     }
   }
 
+  // DW
+  output_llh_file_stream = fopen(output_llh_file.c_str(), "w");
+  std::cout << "output_llh_file = " << output_llh_file << std::endl;
+
+  ASSERT_NE(NULL, output_llh_file_stream);
+
   if(ALPHA <= 0) {
     logstream(LOG_ERROR) 
       << "Alpha must be positive (alpha=" << ALPHA << ")!"  << std::endl;
@@ -1170,7 +1235,7 @@ int main(int argc, char** argv) {
       << "Beta must be positive (beta=" << BETA << ")!"  << std::endl;
     return EXIT_FAILURE;
   }
-   
+
   /// Initialize the log_gamma precached calculations.
   ALPHA_LGAMMA.init(ALPHA, 100000);
   BETA_LGAMMA.init(BETA, 1000000);
@@ -1212,7 +1277,7 @@ int main(int argc, char** argv) {
       engine.aggregate_periodic("global_counts", 5);
     ASSERT_TRUE(success);
   }
-  
+
   { // Add the likelihood aggregator
     const bool success =
       engine.add_vertex_aggregator<likelihood_aggregator>
@@ -1223,9 +1288,13 @@ int main(int argc, char** argv) {
     ASSERT_TRUE(success);
   }
 
+
   ///! schedule only documents
   dc.cout() << "Running The Collapsed Gibbs Sampler" << std::endl;
   engine.map_reduce_vertices<graphlab::empty>(signal_only::docs);
+  // DW
+  global_timer.restart();
+
   graphlab::timer timer;
   // Enable sampling
   cgs_lda_vertex_program::DISABLE_SAMPLING = false;
@@ -1235,18 +1304,21 @@ int main(int argc, char** argv) {
   cgs_lda_vertex_program::DISABLE_SAMPLING = true;
   engine.signal_all();
   engine.start();
-  
+
   const double runtime = timer.current_time();
   dc.cout()
     << "----------------------------------------------------------" << std::endl
     << "Final Runtime (seconds):   " << runtime
-    << std::endl
-    << "Updates executed: " << engine.num_updates() << std::endl
-    << "Update Rate (updates/second): "
-    << engine.num_updates() / runtime << std::endl;
-  
-  
-  
+                                        << std::endl
+                                        << "Updates executed: " << engine.num_updates() << std::endl
+                                        << "Update Rate (updates/second): "
+                                          << engine.num_updates() / runtime << std::endl;
+
+  // DW:
+  ASSERT_EQ(0, fclose(output_llh_file_stream));
+
+
+
   if(!word_dir.empty()) {
     // save word topic counts
     const bool gzip_output = false;
@@ -1255,11 +1327,11 @@ int main(int argc, char** argv) {
     const size_t threads_per_machine = 2;
     const bool save_words = true;
     graph.save(word_dir, count_saver(save_words),
-               gzip_output, save_vertices, 
-               save_edges, threads_per_machine);
+        gzip_output, save_vertices, 
+        save_edges, threads_per_machine);
   }
 
-  
+
   if(!doc_dir.empty()) {
     // save doc topic counts
     const bool gzip_output = false;
@@ -1268,8 +1340,8 @@ int main(int argc, char** argv) {
     const size_t threads_per_machine = 2;
     const bool save_words = false;
     graph.save(doc_dir, count_saver(save_words),
-               gzip_output, save_vertices, 
-               save_edges, threads_per_machine);
+        gzip_output, save_vertices, 
+        save_edges, threads_per_machine);
 
   }
 
